@@ -1640,7 +1640,7 @@ Secondary Interface %s :: IPv4: (%s, %s), IPv6: (%s, %s)`, helpers.DualStackSupp
 
 			count := 10
 
-			pod, err := kubectl.GetCiliumPodOnNode(helpers.K8s2)
+			pod, err := kubectl.GetCiliumPodOnNodeWithLabel(helpers.K8s2)
 			ExpectWithOffset(1, err).Should(BeNil(), "Cannot determine cilium pod name")
 
 			res := kubectl.CiliumExecContext(context.TODO(), pod, "cilium service list | grep "+k8s2IP+":"+httpHostPortStr+" | grep HostPort")
