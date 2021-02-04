@@ -1,11 +1,11 @@
 name: Images legacy
 
 on:
-  pull_request_target:
-    types:
-      - opened
-      - synchronize
-      - reopened
+#  pull_request_target:
+#    types:
+#      - opened
+#      - synchronize
+#      - reopened
   push:
     branches:
       - master
@@ -15,17 +15,56 @@ on:
       - v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+
 
 jobs:
-  build-on-prs:
-    if: ${{ github.repository == 'cilium/cilium' && github.event_name == 'pull_request_target' }}
+  build-and-push:
     runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        include:
+          - name: cilium
+            dockerfile: ./Dockerfile
+          - name: operator
+            dockerfile: ./cilium-operator.Dockerfile
+          - name: operator-aws
+            dockerfile: ./cilium-operator-aws.Dockerfile
+          - name: operator-azure
+            dockerfile: ./cilium-operator-azure.Dockerfile
+          - name: operator-generic
+            dockerfile: ./cilium-operator-generic.Dockerfile
+          - name: hubble-relay
+            dockerfile: ./hubble-relay.Dockerfile
+          - name: clustermesh-apiserver
+            dockerfile: ./clustermesh-apiserver.Dockerfile
+          - name: docker-plugin
+            dockerfile: ./cilium-docker-plugin.Dockerfile
     steps:
       - name: Checkout PR
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name != 'pull_request_target' }}
+        uses: actions/checkout@v2
+      - name: Checkout Stable Branch
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name == 'pull_request_target' }}
         uses: actions/checkout@v2
         with:
          ref: ${{ github.event.pull_request.head.sha }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v1
+      - name: Login to DockerHub
+        # We only need DockerHub Login in releases and pushes to main branch
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name != 'pull_request_target' }}
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
       - name: Login to quay.io
+        # We use different credentials for CI and for releases
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name != 'pull_request_target' }}
+        uses: docker/login-action@v1
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+      - name: Login to quay.io for CI
+        # We use different credentials for CI and for releases
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name == 'pull_request_target' }}
         uses: docker/login-action@v1
         with:
           registry: quay.io
@@ -34,236 +73,69 @@ jobs:
       - name: Set output
         id: vars
         run: echo ::set-output name=tag::${GITHUB_REF##*/}
-      - name: Build Cilium
-        id: docker_build_cilium
+      - name: Release Builds ${{ matrix.name }}
+        # We only need official DockerHub images in releases and pushes to main branch
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name != 'pull_request_target' }}
         uses: docker/build-push-action@v2
+        id: docker_build_release
         with:
           context: .
-          file: ./Dockerfile
+          file: ${{ matrix.dockerfile }}
           push: true
-          cache-from: ${{ github.repository_owner }}/cilium-dev:cache-build-${{ github.event.pull_request.head.ref }}
+          cache-from: ${{ github.repository_owner }}/${{ matrix.name }}-dev:cache-build-${{ steps.vars.outputs.tag }}
+          cache-to: mode=max,type=registry,ref=${{ github.repository_owner }}/${{ matrix.name }}-dev:cache-build-${{ steps.vars.outputs.tag }}
           tags: |
-            quay.io/${{ github.repository_owner }}/cilium-ci:${{ github.sha }}
-      - name: Build Cilium Operator
-        id: docker_build_operator
+            ${{ github.repository_owner }}/${{ matrix.name }}-dev:${{ steps.vars.outputs.tag }}
+            quay.io/${{ github.repository_owner }}/${{ matrix.name }}-dev:${{ steps.vars.outputs.tag }}
+            quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ github.sha }}
+      - name: CI Builds ${{ matrix.name }}
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name == 'pull_request_target' }}
         uses: docker/build-push-action@v2
+        id: docker_build_ci
         with:
           context: .
-          file: ./cilium-operator.Dockerfile
+          file: ${{ matrix.dockerfile }}
           push: true
-          cache-from: ${{ github.repository_owner }}/operator-dev:cache-build-${{ github.event.pull_request.head.ref }}
+          cache-from: ${{ github.repository_owner }}/${{ matrix.name }}-dev:cache-build-${{ github.event.pull_request.head.ref }}
           tags: |
-            quay.io/${{ github.repository_owner }}/operator-ci:${{ github.sha }}
-      - name: Build Cilium Operator AWS
-        id: docker_build_operator_aws
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./cilium-operator-aws.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/operator-aws-dev:cache-build-${{ github.event.pull_request.head.ref }}
-          tags: |
-            quay.io/${{ github.repository_owner }}/operator-aws-ci:${{ github.sha }}
-      - name: Build Cilium Operator Azure
-        id: docker_build_operator_azure
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./cilium-operator-azure.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/operator-azure-dev:cache-build-${{ github.event.pull_request.head.ref }}
-          tags: |
-            quay.io/${{ github.repository_owner }}/operator-azure-ci:${{ github.sha }}
-      - name: Build Cilium Operator Generic
-        id: docker_build_operator_generic
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./cilium-operator-generic.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/operator-generic-dev:cache-build-${{ github.event.pull_request.head.ref }}
-          tags: |
-            quay.io/${{ github.repository_owner }}/operator-generic-ci:${{ github.sha }}
-      - name: Build Hubble Relay
-        id: docker_build_hubble_relay
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./hubble-relay.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/hubble-relay-dev:cache-build-${{ github.event.pull_request.head.ref }}
-          tags: |
-            quay.io/${{ github.repository_owner }}/hubble-relay-ci:${{ github.sha }}
-      - name: Build Clustermesh
-        id: docker_build_clustermesh_apiserver
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./clustermesh-apiserver.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/clustermesh-apiserver-dev:cache-build-${{ github.event.pull_request.head.ref }}
-          tags: |
-            quay.io/${{ github.repository_owner }}/clustermesh-apiserver-ci:${{ github.sha }}
-      - name: Build Docker Plugin
-        id: docker_build_docker_plugin
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./cilium-docker-plugin.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/docker-plugin-dev:cache-build-${{ github.event.pull_request.head.ref }}
-          tags: |
-            quay.io/${{ github.repository_owner }}/docker-plugin-ci:${{ github.sha }}
-      - name: Image digests
+            quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ github.event.pull_request.head.sha }}
+      - name: CI Image Releases digests
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name == 'pull_request_target' }}
+        shell: bash
         run: |
-          echo "::group::Image digests for CI"
-          echo "Docker Image Repositories: quay.io"
-          echo "Cilium: ${{ steps.docker_build_cilium.outputs.digest }}"
-          echo "Cilium Operator: ${{ steps.docker_build_operator.outputs.digest }}"
-          echo "Cilium Operator AWS: ${{ steps.docker_build_operator_aws.outputs.digest }}"
-          echo "Cilium Operator Azure: ${{ steps.docker_build_operator_azure.outputs.digest }}"
-          echo "Cilium Operator Generic: ${{ steps.docker_build_operator_generic.outputs.digest }}"
-          echo "Hubble Relay: ${{ steps.docker_build_hubble_relay.outputs.digest }}"
-          echo "Clustermesh API-Server Relay: ${{ steps.docker_build_clustermesh_apiserver.outputs.digest }}"
-          echo "Docker Plugin: ${{ steps.docker_build_docker_plugin.outputs.digest }}"
-          echo "::endgroup::"
-
-  build-on-stable:
-    if: ${{ github.repository == 'cilium/cilium' && github.event_name != 'pull_request_target' }}
+          mkdir -p image-digest/
+          echo "quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ github.sha }}@${{ steps.docker_build_ci.outputs.digest }}" > image-digest/${{ matrix.name }}.txt
+      - name: Image Releases digests
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name != 'pull_request_target' }}
+        shell: bash
+        run: |
+          mkdir -p image-digest/
+          echo "docker.io/${{ github.repository_owner }}/${{ matrix.name }}-dev:${{ steps.vars.outputs.tag }}@${{ steps.docker_build_release.outputs.digest }}" > image-digest/${{ matrix.name }}.txt
+          echo "quay.io/${{ github.repository_owner }}/${{ matrix.name }}-dev:${{ steps.vars.outputs.tag }}@${{ steps.docker_build_release.outputs.digest }}" >> image-digest/${{ matrix.name }}.txt
+          echo "quay.io/${{ github.repository_owner }}/${{ matrix.name }}-ci:${{ github.sha }}@${{ steps.docker_build_release.outputs.digest }}" >> image-digest/${{ matrix.name }}.txt
+      - name: Upload math result for job 1
+        uses: actions/upload-artifact@v2
+        with:
+          name: image-digest ${{ matrix.name }}
+          path: image-digest
+          retention-days: 1
+  image-digests:
+    name: Display Digests
+    needs: build-and-push
     runs-on: ubuntu-20.04
     steps:
-      - name: Checkout PR
-        uses: actions/checkout@v2
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v1
-      - name: Login to DockerHub
-        uses: docker/login-action@v1
-        with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
-      - name: Login to quay.io
-        uses: docker/login-action@v1
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_USERNAME }}
-          password: ${{ secrets.QUAY_PASSWORD }}
-      - name: Set output
-        id: vars
-        run: echo ::set-output name=tag::${GITHUB_REF##*/}
-      - name: Build Cilium
-        id: docker_build_cilium
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/cilium-dev:cache-build-${{ steps.vars.outputs.tag }}
-          cache-to: mode=max,type=registry,ref=${{ github.repository_owner }}/cilium-dev:cache-build-${{ steps.vars.outputs.tag }}
-          tags: |
-            ${{ github.repository_owner }}/cilium-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/cilium-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/cilium-ci:${{ steps.vars.outputs.tag }}
-      - name: Build Cilium Operator
-        id: docker_build_operator
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./cilium-operator.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/operator-dev:cache-build-${{ steps.vars.outputs.tag }}
-          cache-to: mode=max,type=registry,ref=${{ github.repository_owner }}/operator-dev:cache-build-${{ steps.vars.outputs.tag }}
-          tags: |
-            ${{ github.repository_owner }}/operator-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/operator-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/operator-ci:${{ steps.vars.outputs.tag }}
-      - name: Build Cilium Operator AWS
-        id: docker_build_operator_aws
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./cilium-operator-aws.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/operator-aws-dev:cache-build-${{ steps.vars.outputs.tag }}
-          cache-to: mode=max,type=registry,ref=${{ github.repository_owner }}/operator-aws-dev:cache-build-${{ steps.vars.outputs.tag }}
-          tags: |
-            ${{ github.repository_owner }}/operator-aws-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/operator-aws-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/operator-aws-ci:${{ steps.vars.outputs.tag }}
-      - name: Build Cilium Operator Azure
-        id: docker_build_operator_azure
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./cilium-operator-azure.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/operator-azure-dev:cache-build-${{ steps.vars.outputs.tag }}
-          cache-to: mode=max,type=registry,ref=${{ github.repository_owner }}/operator-azure-dev:cache-build-${{ steps.vars.outputs.tag }}
-          tags: |
-            ${{ github.repository_owner }}/operator-azure-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/operator-azure-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/operator-azure-ci:${{ steps.vars.outputs.tag }}
-      - name: Build Cilium Operator Generic
-        id: docker_build_operator_generic
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./cilium-operator-generic.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/operator-generic-dev:cache-build-${{ steps.vars.outputs.tag }}
-          cache-to: mode=max,type=registry,ref=${{ github.repository_owner }}/operator-generic-dev:cache-build-${{ steps.vars.outputs.tag }}
-          tags: |
-            ${{ github.repository_owner }}/operator-generic-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/operator-generic-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/operator-generic-ci:${{ steps.vars.outputs.tag }}
-      - name: Build Hubble Relay
-        id: docker_build_hubble_relay
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./hubble-relay.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/hubble-relay-dev:cache-build-${{ steps.vars.outputs.tag }}
-          cache-to: mode=max,type=registry,ref=${{ github.repository_owner }}/hubble-relay-dev:cache-build-${{ steps.vars.outputs.tag }}
-          tags: |
-            ${{ github.repository_owner }}/hubble-relay-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/hubble-relay-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/hubble-relay-ci:${{ steps.vars.outputs.tag }}
-      - name: Build Clustermesh
-        id: docker_build_clustermesh_apiserver
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./clustermesh-apiserver.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/clustermesh-apiserver-dev:cache-build-${{ steps.vars.outputs.tag }}
-          cache-to: mode=max,type=registry,ref=${{ github.repository_owner }}/clustermesh-apiserver-dev:cache-build-${{ steps.vars.outputs.tag }}
-          tags: |
-            ${{ github.repository_owner }}/clustermesh-apiserver-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/clustermesh-apiserver-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/clustermesh-apiserver-ci:${{ steps.vars.outputs.tag }}
-      - name: Build Docker Plugin
-        id: docker_build_docker_plugin
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          file: ./cilium-docker-plugin.Dockerfile
-          push: true
-          cache-from: ${{ github.repository_owner }}/docker-plugin-dev:cache-build-${{ steps.vars.outputs.tag }}
-          cache-to: mode=max,type=registry,ref=${{ github.repository_owner }}/docker-plugin-dev:cache-build-${{ steps.vars.outputs.tag }}
-          tags: |
-            ${{ github.repository_owner }}/docker-plugin-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/docker-plugin-dev:${{ steps.vars.outputs.tag }}
-            quay.io/${{ github.repository_owner }}/docker-plugin-ci:${{ steps.vars.outputs.tag }}
-      - name: Image digests
+      - name: Image Releases digests
+        if: ${{ github.repository == 'cilium/cilium' && github.event_name != 'pull_request_target' }}
+        shell: bash
         run: |
-          echo "::group::Image digests"
-          echo "Official Docker Image Repositories: docker.io, quay.io"
-          echo "Cilium: ${{ steps.docker_build_cilium.outputs.digest }}"
-          echo "Cilium Operator: ${{ steps.docker_build_operator.outputs.digest }}"
-          echo "Cilium Operator AWS: ${{ steps.docker_build_operator_aws.outputs.digest }}"
-          echo "Cilium Operator Azure: ${{ steps.docker_build_operator_azure.outputs.digest }}"
-          echo "Cilium Operator Generic: ${{ steps.docker_build_operator_generic.outputs.digest }}"
-          echo "Hubble Relay: ${{ steps.docker_build_hubble_relay.outputs.digest }}"
-          echo "Clustermesh API-Server Relay: ${{ steps.docker_build_clustermesh_apiserver.outputs.digest }}"
-          echo "Docker Plugin: ${{ steps.docker_build_docker_plugin.outputs.digest }}"
-          echo "::endgroup::"
+          mkdir -p image-digest/
+      - name: Download digests of all images built
+        uses: actions/download-artifact@v2
+        with:
+          path: image-digest/
+
+      - name: Image Digests
+        shell: bash
+        run: |
+          cd image-digest/
+          find -type f -exec cat {} \;
